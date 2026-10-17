@@ -2,7 +2,6 @@ package com.subburner.app
 
 import android.content.ContentValues
 import android.content.Context
-import android.media.MediaCodecInfo
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -122,7 +121,6 @@ class VideoBurner(private val context: Context) {
                 .setRequestedVideoEncoderSettings(
                     VideoEncoderSettings.Builder()
                         .setBitrate(info.bitrate)
-                        .setBitrateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
                         .build()
                 )
                 .setEnableFallback(true)
