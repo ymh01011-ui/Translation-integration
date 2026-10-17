@@ -14,6 +14,7 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
@@ -45,9 +46,9 @@ class VideoBurner(private val context: Context) {
         const val TARGET_SHORT_SIDE = 720
 
         // جودة الضغط: بت لكل بكسل لكل إطار. أعلى = جودة وحجم أكبر.
-        // 0.065 تقريبًا 1.8 ميجابت/ث لفيديو 720p، يعني حوالي 300 ميجا لفيديو 22 دقيقة.
-        // لو عايز حجم أقل نزّله لـ 0.05، ولو عايز جودة أعلى ارفعه لـ 0.08.
-        const val BITS_PER_PIXEL = 0.065
+        // 0.10 تقريبًا 2.8 ميجابت/ث لفيديو 720p، يعني حوالي 450 إلى 500 ميجا لفيديو 22 دقيقة.
+        // لو عايز حجم أقل نزّله لـ 0.08، ولو عايز جودة أعلى في المشاهد السريعة ارفعه لـ 0.12.
+        const val BITS_PER_PIXEL = 0.10
         const val ASSUMED_FPS = 30L
     }
 
@@ -108,7 +109,7 @@ class VideoBurner(private val context: Context) {
             val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
                 .setEffects(
                     Effects(
-                        listOf<AudioProcessor>(),
+                        listOf<AudioProcessor>(SonicAudioProcessor()),
                         listOf<Effect>(presentation, overlayEffect)
                     )
                 )
