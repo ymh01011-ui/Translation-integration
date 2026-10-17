@@ -10,7 +10,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import androidx.media3.common.AudioProcessor
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
