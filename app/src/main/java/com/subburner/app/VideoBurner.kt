@@ -10,10 +10,10 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.TextureOverlay
@@ -177,13 +177,14 @@ class VideoBurner(private val context: Context) {
                 val tmp = w; w = h; h = tmp
             }
 
-            // بت ريت عالي يحافظ على الجودة: الأكبر بين الأصلي والمحسوب من الأبعاد
+            // بت ريت قريب من الأصلي عشان الحجم ميزيدش
+            // غيّر 0.85 حسب رغبتك: أعلى = جودة وحجم أكبر، أقل = حجم أصغر
             val original = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
                 ?.toLongOrNull() ?: 0L
-            val computed = (w.toLong() * h.toLong() * 30L * 0.14).toLong()
-            val bitrate = maxOf(original, computed)
-                .coerceIn(2_000_000L, 40_000_000L)
+            val fallback = (w.toLong() * h.toLong() * 30L * 0.07).toLong()
+            val bitrate = (if (original > 0) (original * 0.85).toLong() else fallback)
+                .coerceIn(1_000_000L, 40_000_000L)
                 .toInt()
 
             return VideoInfo(w, h, bitrate)
