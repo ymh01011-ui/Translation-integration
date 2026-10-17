@@ -142,8 +142,30 @@ class VideoBurner(private val context: Context) {
                         exportResult: ExportResult,
                         exportException: ExportException
                     ) {
-                        val detail = exportException.message ?: exportException.errorCodeName
-                        fail("فشل الدمج: $detail")
+                        val sb = StringBuilder("فشل الدمج\n")
+                        sb.append(exportException.errorCodeName).append("\n")
+                        var t: Throwable? = exportException
+                        var depth = 0
+                        while (t != null && depth < 4) {
+                            sb.append(t.javaClass.simpleName)
+                                .append(": ")
+                                .append(t.message)
+                                .append("\n")
+                            val top = t.stackTrace.firstOrNull { it.className.startsWith("com.subburner") }
+                                ?: t.stackTrace.firstOrNull()
+                            if (top != null) {
+                                sb.append("  at ")
+                                    .append(top.className.substringAfterLast('.'))
+                                    .append(".")
+                                    .append(top.methodName)
+                                    .append(":")
+                                    .append(top.lineNumber)
+                                    .append("\n")
+                            }
+                            t = t.cause
+                            depth++
+                        }
+                        fail(sb.toString().trim())
                     }
                 })
                 .build()
