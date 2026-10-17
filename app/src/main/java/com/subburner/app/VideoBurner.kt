@@ -151,15 +151,13 @@ class VideoBurner(private val context: Context) {
                                 .append(": ")
                                 .append(t.message)
                                 .append("\n")
-                            val top = t.stackTrace.firstOrNull { it.className.startsWith("com.subburner") }
-                                ?: t.stackTrace.firstOrNull()
-                            if (top != null) {
+                            for (frame in t.stackTrace.take(7)) {
                                 sb.append("  at ")
-                                    .append(top.className.substringAfterLast('.'))
+                                    .append(frame.className.substringAfterLast('.'))
                                     .append(".")
-                                    .append(top.methodName)
+                                    .append(frame.methodName)
                                     .append(":")
-                                    .append(top.lineNumber)
+                                    .append(frame.lineNumber)
                                     .append("\n")
                             }
                             t = t.cause
