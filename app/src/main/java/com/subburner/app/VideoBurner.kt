@@ -2,6 +2,7 @@ package com.subburner.app
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaCodecInfo
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -16,6 +17,7 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
+import androidx.media3.effect.Presentation
 import androidx.media3.effect.TextureOverlay
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
@@ -33,11 +35,22 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * بيدمج الترجمة (SRT) جوه الفيديو.
+ * بيدمج الترجمة (SRT) جوه الفيديو ويصغّر الدقة لـ 720p.
  * لازم start() و cancel() يتنادوا من الـ Main Thread.
  */
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class VideoBurner(private val context: Context) {
+
+    companion object {
+        // الضلع الأقصر في الفيديو الناتج (720 = 720p). مش بيكبّر فيديو أصغر منه.
+        const val TARGET_SHORT_SIDE = 720
+
+        // جودة الضغط: بت لكل بكسل لكل إطار. أعلى = جودة وحجم أكبر.
+        // 0.065 تقريبًا 1.8 ميجابت/ث لفيديو 720p، يعني حوالي 300 ميجا لفيديو 22 دقيقة.
+        // لو عايز حجم أقل نزّله لـ 0.05، ولو عايز جودة أعلى ارفعه لـ 0.08.
+        const val BITS_PER_PIXEL = 0.065
+        const val ASSUMED_FPS = 30L
+    }
 
     interface Callback {
         fun onProgress(percent: Int)
@@ -45,7 +58,7 @@ class VideoBurner(private val context: Context) {
         fun onError(message: String)
     }
 
-    private data class VideoInfo(val width: Int, val height: Int, val bitrate: Int)
+    private data class VideoInfo(val outWidth: Int, val outHeight: Int, val bitrate: Int)
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val progressHolder = ProgressHolder()
@@ -84,14 +97,20 @@ class VideoBurner(private val context: Context) {
 
             val info = readVideoInfo(videoUri)
 
-            val overlay = SubtitleOverlay(context, cues, info.width, info.height)
+            // الترتيب مهم: نصغّر الأول، وبعدين نرسم الترجمة بأبعاد الفيديو الناتج
+            val presentation = Presentation.createForWidthAndHeight(
+                info.outWidth,
+                info.outHeight,
+                Presentation.LAYOUT_SCALE_TO_FIT
+            )
+            val overlay = SubtitleOverlay(context, cues, info.outWidth, info.outHeight)
             val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
 
             val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
                 .setEffects(
                     Effects(
                         listOf<AudioProcessor>(),
-                        listOf<Effect>(overlayEffect)
+                        listOf<Effect>(presentation, overlayEffect)
                     )
                 )
                 .build()
@@ -101,7 +120,10 @@ class VideoBurner(private val context: Context) {
 
             val encoderFactory = DefaultEncoderFactory.Builder(context)
                 .setRequestedVideoEncoderSettings(
-                    VideoEncoderSettings.Builder().setBitrate(info.bitrate).build()
+                    VideoEncoderSettings.Builder()
+                        .setBitrate(info.bitrate)
+                        .setBitrateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                        .build()
                 )
                 .setEnableFallback(true)
                 .build()
@@ -177,21 +199,28 @@ class VideoBurner(private val context: Context) {
                 val tmp = w; w = h; h = tmp
             }
 
-            // بت ريت قريب من الأصلي عشان الحجم ميزيدش
-            // غيّر 0.85 حسب رغبتك: أعلى = جودة وحجم أكبر، أقل = حجم أصغر
+            // تصغير الضلع الأقصر لـ 720 (من غير تكبير) مع الحفاظ على النسبة
+            val shortSide = minOf(w, h)
+            val target = minOf(TARGET_SHORT_SIDE, shortSide)
+            val scale = target.toDouble() / shortSide.toDouble()
+            val outW = makeEven(Math.round(w * scale).toInt())
+            val outH = makeEven(Math.round(h * scale).toInt())
+
+            // البت ريت محسوب من أبعاد الناتج، ومش بيعدّي 80% من البت ريت الأصلي
+            val computed = (outW.toLong() * outH.toLong() * ASSUMED_FPS * BITS_PER_PIXEL).toLong()
             val original = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
                 ?.toLongOrNull() ?: 0L
-            val fallback = (w.toLong() * h.toLong() * 30L * 0.07).toLong()
-            val bitrate = (if (original > 0) (original * 0.85).toLong() else fallback)
-                .coerceIn(1_000_000L, 40_000_000L)
-                .toInt()
+            val capped = if (original > 0) minOf(computed, (original * 0.8).toLong()) else computed
+            val bitrate = capped.coerceIn(600_000L, 20_000_000L).toInt()
 
-            return VideoInfo(w, h, bitrate)
+            return VideoInfo(outW, outH, bitrate)
         } finally {
             retriever.release()
         }
     }
+
+    private fun makeEven(value: Int): Int = maxOf(2, (value / 2) * 2)
 
     private fun onExportCompleted(file: File) {
         callback?.onProgress(100)
