@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Subtitle Burner</string>
+    <string name="title">دمج الترجمة في الفيديو</string>
+
+    <string name="pick_video">اختيار الفيديو</string>
+    <string name="pick_srt">اختيار ملف الترجمة (SRT)</string>
+
+    <string name="no_video">لم يتم اختيار فيديو</string>
+    <string name="no_srt">لم يتم اختيار ملف ترجمة</string>
+
+    <string name="start">Start</string>
+    <string name="cancel">إلغاء</string>
+    <string name="open_video">فتح الفيديو</string>
+</resources>
