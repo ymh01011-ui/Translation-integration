@@ -2,8 +2,6 @@ package com.subburner.app
 
 import android.content.ContentValues
 import android.content.Context
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -12,46 +10,39 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
-import android.widget.Toast
-import androidx.media3.common.Effect
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.effect.OverlayEffect
-import androidx.media3.effect.Presentation
-import androidx.media3.effect.TextureOverlay
-import androidx.media3.transformer.Composition
-import androidx.media3.transformer.DefaultEncoderFactory
-import androidx.media3.transformer.EditedMediaItem
-import androidx.media3.transformer.Effects
-import androidx.media3.transformer.ExportException
-import androidx.media3.transformer.ExportResult
-import androidx.media3.transformer.ProgressHolder
-import androidx.media3.transformer.Transformer
-import androidx.media3.transformer.VideoEncoderSettings
-import com.google.common.collect.ImmutableList
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * بيدمج الترجمة (SRT) جوه الفيديو ويصغّر الدقة لـ 720p.
+ * بيدمج الترجمة (SRT) جوه الفيديو باستخدام FFmpeg.
+ * الصوت بيتنسخ زي ما هو من غير أي تعديل (أي صيغة، حتى E-AC-3 و5.1).
+ * الفيديو بيتصغّر لـ 720p ويتضغط بجودة ثابتة (CRF).
  * لازم start() و cancel() يتنادوا من الـ Main Thread.
  */
-@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class VideoBurner(private val context: Context) {
 
     companion object {
-        // الضلع الأقصر في الفيديو الناتج (720 = 720p). مش بيكبّر فيديو أصغر منه.
+        // الضلع الأقصر في الفيديو الناتج. مش بيكبّر فيديو أصغر منه.
         const val TARGET_SHORT_SIDE = 720
 
-        // جودة الضغط: بت لكل بكسل لكل إطار. أعلى = جودة وحجم أكبر.
-        // 0.12 تقريبًا 3.3 ميجابت/ث لفيديو 720p، يعني حوالي 550 إلى 600 ميجا لفيديو 22 دقيقة.
-        // لو عايز حجم أقل نزّله لـ 0.08، ولو عايز جودة أعلى في المشاهد السريعة ارفعه لـ 0.14.
-        const val BITS_PER_PIXEL = 0.12
-        const val ASSUMED_FPS = 30L
+        // الجودة: رقم أقل = جودة أعلى وحجم أكبر. 20 جودة عالية جدًا، 24 حجم أصغر.
+        const val CRF = 22
+
+        // سرعة الضغط: veryfast أسرع، slow أبطأ وبيطلع حجم أصغر بنفس الجودة.
+        const val PRESET = "veryfast"
+
+        // شكل الترجمة (المقاييس نسبة لشاشة ارتفاعها 288 وحدة)
+        const val FONT_SIZE = 18
+        const val OUTLINE = 2
+        const val MARGIN_V = 14
+
+        // اسم خط معيّن من فولدر assets/fonts (سيبه فاضي لاستخدام خط النظام)
+        const val FONT_NAME = ""
     }
 
     interface Callback {
@@ -60,29 +51,16 @@ class VideoBurner(private val context: Context) {
         fun onError(message: String)
     }
 
-    private data class VideoInfo(val outWidth: Int, val outHeight: Int, val bitrate: Int)
+    private data class VideoInfo(val outWidth: Int, val outHeight: Int, val durationMs: Long)
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val progressHolder = ProgressHolder()
 
-    private var transformer: Transformer? = null
-    private var tempFile: File? = null
     private var callback: Callback? = null
+    private var sessionId: Long = -1L
+    private var tempFile: File? = null
     private var finished = true
 
     val isRunning: Boolean get() = !finished
-
-    private val pollRunnable = object : Runnable {
-        override fun run() {
-            val t = transformer ?: return
-            if (finished) return
-            val state = t.getProgress(progressHolder)
-            if (state == Transformer.PROGRESS_STATE_AVAILABLE) {
-                callback?.onProgress(progressHolder.progress)
-            }
-            mainHandler.postDelayed(this, 300)
-        }
-    }
 
     fun start(videoUri: Uri, srtUri: Uri, callback: Callback) {
         if (!finished) return
@@ -91,99 +69,78 @@ class VideoBurner(private val context: Context) {
         cleanOldTempFiles()
 
         try {
-            val cues = readCues(srtUri)
-            if (cues.isEmpty()) {
+            // 1) الترجمة: نفك الترميز (UTF-8 أو Windows-1256) ونكتبها UTF-8 نظيفة
+            val srtBytes = context.contentResolver.openInputStream(srtUri)?.use { it.readBytes() }
+                ?: throw IllegalStateException("تعذر فتح ملف الترجمة")
+            val srtText = SrtParser.decode(srtBytes)
+            if (SrtParser.parseText(srtText).isEmpty()) {
                 fail("ملف الترجمة فاضي أو مش بصيغة SRT سليمة")
                 return
             }
+            val srtFile = File(context.cacheDir, "burn_sub.srt")
+            srtFile.writeText(srtText, Charsets.UTF_8)
 
+            // 2) معلومات الفيديو
             val info = readVideoInfo(videoUri)
 
-            // الصوت بيتنسخ زي ما هو من غير أي تعديل. الرسالة دي للمعلومة بس
-            val audio = readAudioInfo(videoUri)
-            Toast.makeText(
-                context,
-                "الصوت: ${audio.first} | القنوات: ${audio.second}",
-                Toast.LENGTH_LONG
-            ).show()
-
-            // الترتيب مهم: نصغّر الأول، وبعدين نرسم الترجمة بأبعاد الفيديو الناتج
-            val presentation = Presentation.createForWidthAndHeight(
-                info.outWidth,
-                info.outHeight,
-                Presentation.LAYOUT_SCALE_TO_FIT
-            )
-            val overlay = SubtitleOverlay(context, cues, info.outWidth, info.outHeight)
-            val overlayEffect = OverlayEffect(ImmutableList.of<TextureOverlay>(overlay))
-
-            val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
-                .setEffects(
-                    Effects(
-                        listOf<AudioProcessor>(),
-                        listOf<Effect>(presentation, overlayEffect)
-                    )
-                )
-                .build()
+            // 3) الخطوط (لازم لعرض العربي)
+            FFmpegKitConfig.setFontDirectoryList(context, prepareFontDirs(), null)
 
             val outFile = File(context.cacheDir, "burn_${System.currentTimeMillis()}.mp4")
             tempFile = outFile
 
-            val encoderFactory = DefaultEncoderFactory.Builder(context)
-                .setRequestedVideoEncoderSettings(
-                    VideoEncoderSettings.Builder()
-                        .setBitrate(info.bitrate)
-                        .setiFrameIntervalSeconds(3f)
-                        .build()
-                )
-                .setEnableFallback(true)
-                .build()
+            val inputPath = FFmpegKitConfig.getSafParameterForRead(context, videoUri)
 
-            val t = Transformer.Builder(context)
-                .setVideoMimeType(MimeTypes.VIDEO_H264)
-                .setEncoderFactory(encoderFactory)
-                .addListener(object : Transformer.Listener {
-                    override fun onCompleted(
-                        composition: Composition,
-                        exportResult: ExportResult
-                    ) {
-                        onExportCompleted(outFile)
-                    }
+            var style = "FontSize=$FONT_SIZE,Outline=$OUTLINE,Shadow=0,MarginV=$MARGIN_V"
+            if (FONT_NAME.isNotBlank()) style += ",FontName=$FONT_NAME"
 
-                    override fun onError(
-                        composition: Composition,
-                        exportResult: ExportResult,
-                        exportException: ExportException
-                    ) {
-                        val sb = StringBuilder("فشل الدمج\n")
-                        sb.append(exportException.errorCodeName).append("\n")
-                        var t: Throwable? = exportException
-                        var depth = 0
-                        while (t != null && depth < 4) {
-                            sb.append(t.javaClass.simpleName)
-                                .append(": ")
-                                .append(t.message)
-                                .append("\n")
-                            for (frame in t.stackTrace.take(7)) {
-                                sb.append("  at ")
-                                    .append(frame.className.substringAfterLast('.'))
-                                    .append(".")
-                                    .append(frame.methodName)
-                                    .append(":")
-                                    .append(frame.lineNumber)
-                                    .append("\n")
-                            }
-                            t = t.cause
-                            depth++
-                        }
-                        fail(sb.toString().trim())
-                    }
-                })
-                .build()
+            val filter = "scale=${info.outWidth}:${info.outHeight}:flags=lanczos," +
+                "subtitles=${srtFile.absolutePath}:force_style='$style'"
 
-            transformer = t
+            val args = arrayOf(
+                "-y",
+                "-i", inputPath,
+                "-map", "0:v:0",
+                "-map", "0:a?",
+                "-sn", "-dn",
+                "-vf", filter,
+                "-c:v", "libx264",
+                "-preset", PRESET,
+                "-crf", CRF.toString(),
+                "-pix_fmt", "yuv420p",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                outFile.absolutePath
+            )
+
             callback.onProgress(0)
-            t.start(editedItem, outFile.absolutePath)
-            mainHandler.postDelayed(pollRunnable, 300)
+
+            val session = FFmpegKit.executeWithArgumentsAsync(
+                args,
+                { s ->
+                    mainHandler.post {
+                        if (finished) return@post
+                        val rc = s.returnCode
+                        when {
+                            ReturnCode.isSuccess(rc) -> onExportCompleted(outFile)
+                            ReturnCode.isCancel(rc) -> { /* الإلغاء بيتعامل معاه cancel() */ }
+                            else -> {
+                                val logs = s.allLogsAsString ?: ""
+                                fail("فشل الدمج:\n" + logs.takeLast(900))
+                            }
+                        }
+                    }
+                },
+                null,
+                { stats ->
+                    val total = info.durationMs
+                    if (total > 0) {
+                        val pct = ((stats.time.toLong() * 100) / total).toInt().coerceIn(0, 99)
+                        mainHandler.post { if (!finished) callback.onProgress(pct) }
+                    }
+                }
+            )
+            sessionId = session.sessionId
         } catch (e: Exception) {
             fail(e.message ?: "حصل خطأ غير متوقع")
         }
@@ -192,20 +149,13 @@ class VideoBurner(private val context: Context) {
     fun cancel() {
         if (finished) return
         finished = true
-        mainHandler.removeCallbacks(pollRunnable)
-        transformer?.cancel()
-        transformer = null
+        if (sessionId >= 0) FFmpegKit.cancel(sessionId)
+        sessionId = -1L
         tempFile?.delete()
         tempFile = null
     }
 
     // ---------------------------------------------------------------- //
-
-    private fun readCues(srtUri: Uri): List<SubtitleCue> {
-        val bytes = context.contentResolver.openInputStream(srtUri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("تعذر فتح ملف الترجمة")
-        return SrtParser.parse(bytes)
-    }
 
     private fun readVideoInfo(uri: Uri): VideoInfo {
         val retriever = MediaMetadataRetriever()
@@ -221,6 +171,9 @@ class VideoBurner(private val context: Context) {
             val rotation = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                 ?.toIntOrNull() ?: 0
+            val duration = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
 
             if (w <= 0 || h <= 0) throw IllegalStateException("تعذر قراءة أبعاد الفيديو")
 
@@ -236,15 +189,7 @@ class VideoBurner(private val context: Context) {
             val outW = makeEven(Math.round(w * scale).toInt())
             val outH = makeEven(Math.round(h * scale).toInt())
 
-            // البت ريت محسوب من أبعاد الناتج، ومش بيعدّي 80% من البت ريت الأصلي
-            val computed = (outW.toLong() * outH.toLong() * ASSUMED_FPS * BITS_PER_PIXEL).toLong()
-            val original = retriever
-                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)
-                ?.toLongOrNull() ?: 0L
-            val capped = if (original > 0) minOf(computed, (original * 0.8).toLong()) else computed
-            val bitrate = capped.coerceIn(600_000L, 20_000_000L).toInt()
-
-            return VideoInfo(outW, outH, bitrate)
+            return VideoInfo(outW, outH, duration)
         } finally {
             retriever.release()
         }
@@ -252,26 +197,28 @@ class VideoBurner(private val context: Context) {
 
     private fun makeEven(value: Int): Int = maxOf(2, (value / 2) * 2)
 
-    /** يرجّع (نوع الصوت، عدد القنوات). عدد القنوات -1 لو مش معروف. */
-    private fun readAudioInfo(uri: Uri): Pair<String, Int> {
-        val extractor = MediaExtractor()
+    /** فولدرات الخطوط: خطوط النظام + أي خط حاطه في assets/fonts */
+    private fun prepareFontDirs(): List<String> {
+        val dirs = arrayListOf("/system/fonts")
         try {
-            extractor.setDataSource(context, uri, null)
-            for (i in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(i)
-                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.startsWith("audio/")) {
-                    val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
-                        format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else -1
-                    return Pair(mime, channels)
+            val names = context.assets.list("fonts") ?: emptyArray()
+            if (names.isNotEmpty()) {
+                val dir = File(context.filesDir, "fonts")
+                dir.mkdirs()
+                for (name in names) {
+                    val f = File(dir, name)
+                    if (!f.exists()) {
+                        context.assets.open("fonts/$name").use { input ->
+                            f.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
                 }
+                dirs.add(dir.absolutePath)
             }
         } catch (e: Exception) {
-            // نتجاهل: مجرد معلومة إضافية
-        } finally {
-            extractor.release()
+            // نكمل بخطوط النظام
         }
-        return Pair("غير معروف", -1)
+        return dirs
     }
 
     private fun onExportCompleted(file: File) {
@@ -286,8 +233,7 @@ class VideoBurner(private val context: Context) {
                 mainHandler.post {
                     if (finished) return@post
                     finished = true
-                    mainHandler.removeCallbacks(pollRunnable)
-                    transformer = null
+                    sessionId = -1L
                     tempFile = null
                     callback?.onSuccess(uri)
                 }
@@ -338,15 +284,16 @@ class VideoBurner(private val context: Context) {
 
     private fun cleanOldTempFiles() {
         context.cacheDir.listFiles()?.forEach {
-            if (it.name.startsWith("burn_") && it.name.endsWith(".mp4")) it.delete()
+            if ((it.name.startsWith("burn_") && it.name.endsWith(".mp4")) || it.name == "burn_sub.srt") {
+                it.delete()
+            }
         }
     }
 
     private fun fail(message: String) {
         if (finished && callback == null) return
         finished = true
-        mainHandler.removeCallbacks(pollRunnable)
-        transformer = null
+        sessionId = -1L
         tempFile?.delete()
         tempFile = null
         callback?.onError(message)
