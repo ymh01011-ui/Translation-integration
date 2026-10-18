@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.subburner.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.subburner.app"
@@ -13,6 +13,11 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        // مكتبة FFmpeg منشورة لمعالجات arm64 بس (معظم موبايلات اليومين دول)
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -37,9 +42,6 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
 
-    val media3 = "1.4.1"
-    implementation("androidx.media3:media3-transformer:$media3")
-    implementation("androidx.media3:media3-effect:$media3")
-    implementation("androidx.media3:media3-common:$media3")
-    implementation("androidx.media3:media3-exoplayer:$media3")
+    // FFmpeg (نسخة متصانة من ffmpeg-kit، فيها libass للترجمة و x264 للضغط)
+    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:6.0.3")
 }
