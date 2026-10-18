@@ -17,9 +17,6 @@ import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.audio.ChannelMixingAudioProcessor
-import androidx.media3.common.audio.ChannelMixingMatrix
-import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.Presentation
@@ -55,17 +52,6 @@ class VideoBurner(private val context: Context) {
         // لو عايز حجم أقل نزّله لـ 0.08، ولو عايز جودة أعلى في المشاهد السريعة ارفعه لـ 0.14.
         const val BITS_PER_PIXEL = 0.12
         const val ASSUMED_FPS = 30L
-
-        // معاملات تحويل 5.1 لستيريو. ترتيب القنوات: L, R, C, LFE, Ls, Rs
-        // كل قناة دخل ليها (يسار، يمين). مجموع كل ناحية = 1.0 عشان الصوت ميتشوهش
-        private val DOWNMIX_5_1_TO_STEREO = floatArrayOf(
-            0.414f, 0.000f,   // L
-            0.000f, 0.414f,   // R
-            0.293f, 0.293f,   // C
-            0.000f, 0.000f,   // LFE
-            0.293f, 0.000f,   // Ls
-            0.000f, 0.293f    // Rs
-        )
     }
 
     interface Callback {
@@ -113,23 +99,13 @@ class VideoBurner(private val context: Context) {
 
             val info = readVideoInfo(videoUri)
 
-            // قراءة نوع الصوت وعدد قنواته (بيظهر في رسالة قصيرة عشان نعرف مواصفات الصوت)
+            // الصوت بيتنسخ زي ما هو من غير أي تعديل. الرسالة دي للمعلومة بس
             val audio = readAudioInfo(videoUri)
             Toast.makeText(
                 context,
                 "الصوت: ${audio.first} | القنوات: ${audio.second}",
                 Toast.LENGTH_LONG
             ).show()
-
-            // لو الصوت 5.1 نحوّله لستيريو بمعادلة واضحة بدل التحويل التلقائي
-            val audioProcessors = ArrayList<AudioProcessor>()
-            if (audio.second == 6) {
-                val mixer = ChannelMixingAudioProcessor()
-                mixer.putChannelMixingMatrix(ChannelMixingMatrix(6, 2, DOWNMIX_5_1_TO_STEREO))
-                audioProcessors.add(mixer)
-            }
-            // معالج فاضي بيجبر الصوت يتعاد ترميزه (علاج خطأ الـ 99%)
-            audioProcessors.add(SonicAudioProcessor())
 
             // الترتيب مهم: نصغّر الأول، وبعدين نرسم الترجمة بأبعاد الفيديو الناتج
             val presentation = Presentation.createForWidthAndHeight(
@@ -143,7 +119,7 @@ class VideoBurner(private val context: Context) {
             val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
                 .setEffects(
                     Effects(
-                        audioProcessors,
+                        listOf<AudioProcessor>(),
                         listOf<Effect>(presentation, overlayEffect)
                     )
                 )
