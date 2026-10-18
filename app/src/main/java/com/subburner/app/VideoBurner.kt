@@ -2,6 +2,8 @@ package com.subburner.app
 
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -10,10 +12,13 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
+import android.widget.Toast
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.ChannelMixingAudioProcessor
+import androidx.media3.common.audio.ChannelMixingMatrix
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.OverlayEffect
@@ -46,10 +51,21 @@ class VideoBurner(private val context: Context) {
         const val TARGET_SHORT_SIDE = 720
 
         // جودة الضغط: بت لكل بكسل لكل إطار. أعلى = جودة وحجم أكبر.
-        // 0.10 تقريبًا 2.8 ميجابت/ث لفيديو 720p، يعني حوالي 450 إلى 500 ميجا لفيديو 22 دقيقة.
-        // لو عايز حجم أقل نزّله لـ 0.08، ولو عايز جودة أعلى في المشاهد السريعة ارفعه لـ 0.12.
-        const val BITS_PER_PIXEL = 0.10
+        // 0.12 تقريبًا 3.3 ميجابت/ث لفيديو 720p، يعني حوالي 550 إلى 600 ميجا لفيديو 22 دقيقة.
+        // لو عايز حجم أقل نزّله لـ 0.08، ولو عايز جودة أعلى في المشاهد السريعة ارفعه لـ 0.14.
+        const val BITS_PER_PIXEL = 0.12
         const val ASSUMED_FPS = 30L
+
+        // معاملات تحويل 5.1 لستيريو. ترتيب القنوات: L, R, C, LFE, Ls, Rs
+        // كل قناة دخل ليها (يسار، يمين). مجموع كل ناحية = 1.0 عشان الصوت ميتشوهش
+        private val DOWNMIX_5_1_TO_STEREO = floatArrayOf(
+            0.414f, 0.000f,   // L
+            0.000f, 0.414f,   // R
+            0.293f, 0.293f,   // C
+            0.000f, 0.000f,   // LFE
+            0.293f, 0.000f,   // Ls
+            0.000f, 0.293f    // Rs
+        )
     }
 
     interface Callback {
@@ -97,6 +113,24 @@ class VideoBurner(private val context: Context) {
 
             val info = readVideoInfo(videoUri)
 
+            // قراءة نوع الصوت وعدد قنواته (بيظهر في رسالة قصيرة عشان نعرف مواصفات الصوت)
+            val audio = readAudioInfo(videoUri)
+            Toast.makeText(
+                context,
+                "الصوت: ${audio.first} | القنوات: ${audio.second}",
+                Toast.LENGTH_LONG
+            ).show()
+
+            // لو الصوت 5.1 نحوّله لستيريو بمعادلة واضحة بدل التحويل التلقائي
+            val audioProcessors = ArrayList<AudioProcessor>()
+            if (audio.second == 6) {
+                val mixer = ChannelMixingAudioProcessor()
+                mixer.putChannelMixingMatrix(ChannelMixingMatrix(6, 2, DOWNMIX_5_1_TO_STEREO))
+                audioProcessors.add(mixer)
+            }
+            // معالج فاضي بيجبر الصوت يتعاد ترميزه (علاج خطأ الـ 99%)
+            audioProcessors.add(SonicAudioProcessor())
+
             // الترتيب مهم: نصغّر الأول، وبعدين نرسم الترجمة بأبعاد الفيديو الناتج
             val presentation = Presentation.createForWidthAndHeight(
                 info.outWidth,
@@ -109,7 +143,7 @@ class VideoBurner(private val context: Context) {
             val editedItem = EditedMediaItem.Builder(MediaItem.fromUri(videoUri))
                 .setEffects(
                     Effects(
-                        listOf<AudioProcessor>(SonicAudioProcessor()),
+                        audioProcessors,
                         listOf<Effect>(presentation, overlayEffect)
                     )
                 )
@@ -122,6 +156,7 @@ class VideoBurner(private val context: Context) {
                 .setRequestedVideoEncoderSettings(
                     VideoEncoderSettings.Builder()
                         .setBitrate(info.bitrate)
+                        .setiFrameIntervalSeconds(3f)
                         .build()
                 )
                 .setEnableFallback(true)
@@ -240,6 +275,28 @@ class VideoBurner(private val context: Context) {
     }
 
     private fun makeEven(value: Int): Int = maxOf(2, (value / 2) * 2)
+
+    /** يرجّع (نوع الصوت، عدد القنوات). عدد القنوات -1 لو مش معروف. */
+    private fun readAudioInfo(uri: Uri): Pair<String, Int> {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(context, uri, null)
+            for (i in 0 until extractor.trackCount) {
+                val format = extractor.getTrackFormat(i)
+                val mime = format.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("audio/")) {
+                    val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT))
+                        format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else -1
+                    return Pair(mime, channels)
+                }
+            }
+        } catch (e: Exception) {
+            // نتجاهل: مجرد معلومة إضافية
+        } finally {
+            extractor.release()
+        }
+        return Pair("غير معروف", -1)
+    }
 
     private fun onExportCompleted(file: File) {
         callback?.onProgress(100)
