@@ -44,4 +44,7 @@ dependencies {
 
     // FFmpeg (نسخة متصانة من ffmpeg-kit، فيها libass للترجمة و x264 للضغط)
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:6.0.3")
+
+    // مكتبة لازمة لـ FFmpeg وقت التشغيل (من غيرها التطبيق بيقفل أول ما تدوس Start)
+    implementation("com.arthenica:smart-exception-java:0.2.1")
 }
