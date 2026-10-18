@@ -141,8 +141,14 @@ class VideoBurner(private val context: Context) {
                 }
             )
             sessionId = session.sessionId
-        } catch (e: Exception) {
-            fail(e.message ?: "حصل خطأ غير متوقع")
+        } catch (e: Throwable) {
+            // Throwable مش Exception: عشان نمسك أخطاء تحميل مكتبة FFmpeg بدل ما التطبيق يقفل
+            val cause = e.cause?.let { "\nالسبب: " + it.javaClass.simpleName + ": " + it.message } ?: ""
+            fail(
+                "تعذر تشغيل FFmpeg\n" +
+                    e.javaClass.simpleName + ": " + (e.message ?: "") + cause +
+                    "\nمعالج الجهاز: " + Build.SUPPORTED_ABIS.joinToString()
+            )
         }
     }
 
