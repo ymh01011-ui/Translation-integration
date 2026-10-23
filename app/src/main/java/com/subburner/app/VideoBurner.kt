@@ -20,7 +20,7 @@ import java.util.Locale
 
 /**
  * بيدمج الترجمة (SRT) جوه الفيديو باستخدام FFmpeg.
- * الصوت بيتنسخ زي ما هو من غير أي تعديل (أي صيغة، حتى E-AC-3 و5.1).
+ * الصوت (أول مسار) بيتحوّل لـ AAC ستيريو لأعلى توافق.
  * الفيديو بيتصغّر لـ 720p ويتضغط بجودة ثابتة (CRF).
  * لازم start() و cancel() يتنادوا من الـ Main Thread.
  */
@@ -40,6 +40,9 @@ class VideoBurner(private val context: Context) {
         const val FONT_SIZE = 18
         const val OUTLINE = 2
         const val MARGIN_V = 14
+
+        // الصوت بيتحوّل لـ AAC ستيريو عشان يشتغل في تيليجرام وكل الأجهزة
+        const val AUDIO_BITRATE = "192k"
 
         // اسم خط معيّن من فولدر assets/fonts (سيبه فاضي لاستخدام خط النظام)
         const val FONT_NAME = ""
@@ -97,26 +100,31 @@ class VideoBurner(private val context: Context) {
             val filter = "scale=${info.outWidth}:${info.outHeight}:flags=lanczos," +
                 "subtitles=${srtFile.absolutePath}:force_style='$style'"
 
-            val args = arrayOf(
-                "-y",
-                "-i", inputPath,
-                "-map", "0:v:0",
-                "-map", "0:a?",
-                "-sn", "-dn",
-                "-vf", filter,
-                "-c:v", "libx264",
-                "-preset", PRESET,
-                "-crf", CRF.toString(),
-                "-pix_fmt", "yuv420p",
-                "-c:a", "copy",
-                "-movflags", "+faststart",
-                outFile.absolutePath
+            // الصوت: أول مسار صوت بس، يتحوّل لـ AAC ستيريو (أعلى توافق مع تيليجرام والأجهزة)
+            val audioArgs = listOf("-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ac", "2")
+
+            val args = ArrayList<String>()
+            args.addAll(
+                listOf(
+                    "-y",
+                    "-i", inputPath,
+                    "-map", "0:v:0",
+                    "-map", "0:a:0?",
+                    "-sn", "-dn",
+                    "-vf", filter,
+                    "-c:v", "libx264",
+                    "-preset", PRESET,
+                    "-crf", CRF.toString(),
+                    "-pix_fmt", "yuv420p"
+                )
             )
+            args.addAll(audioArgs)
+            args.addAll(listOf("-movflags", "+faststart", outFile.absolutePath))
 
             callback.onProgress(0)
 
             val session = FFmpegKit.executeWithArgumentsAsync(
-                args,
+                args.toTypedArray(),
                 { s ->
                     mainHandler.post {
                         if (finished) return@post
